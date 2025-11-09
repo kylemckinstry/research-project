@@ -7,7 +7,11 @@ from pathlib import Path
 client = get_firestore()
 
 # Import shifts
-csv_path = Path("data/shiftWeeks_12w.csv")
+from google.cloud import firestore
+from datetime import datetime
+from pathlib import Path
+
+csv_path = Path("data/shiftWeeks_24w.csv")
 if csv_path.exists():
     # Import all shifts (no week filter)
     count = import_shifts_csv(client, csv_path, week_id=None)

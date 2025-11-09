@@ -15,7 +15,7 @@
 
 ```
 ┌──────────────┐
-│  1. LOAD     │  ← shiftWeeks_12w.csv, employees, historical shiftDetails
+│  1. LOAD     │  ← shiftWeeks_24w.csv, employees, historical shiftDetails
 │   DATA       │
 └──────┬───────┘
        │
@@ -27,7 +27,7 @@
        │
        ↓
 ┌──────────────┐
-│  3. EXPORT   │  → shiftDetails_12w.csv (skill points = EMPTY)
+│  3. EXPORT   │  → shiftDetails_24w.csv (skill points = EMPTY)
 │   TO CSV     │     (goes to frontend/backend)
 └──────┬───────┘
        │
@@ -45,7 +45,7 @@
        │
        ↓
 ┌──────────────┐
-│  6. UPDATE   │  ← Update skill points in shiftDetails_12w.csv
+│  6. UPDATE   │  ← Update skill points in shiftDetails_24w.csv
 │ SKILL POINTS │     (manual OR ML-assisted OR automated)
 └──────┬───────┘
        │
@@ -69,15 +69,15 @@
 │ STEP 1: Data Loading                                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  📁 shiftWeeks_12w.csv                                      │
+│  📁 shiftWeeks_24w.csv                                      │
 │     └─> Load into DB: Shift table                           │
 │         (id, date, week_id)                                 │
 │                                                              │
-│  👥 employees_new_12w_v2.csv                                │
+│  👥 employees_id.csv                                        │
 │     └─> Load into DB: Employee table                        │
 │         (employee_id, name, role, base_skills)              │
 │                                                              │
-│  📋 shiftDetails_12w.csv (HISTORICAL)                       │
+│  📋 shiftDetails_24w.csv (HISTORICAL)                       │
 │     └─> Load historical skill points                        │
 │         └─> Calculate AVERAGE skills per employee           │
 │             └─> Update Employee base skills                 │
@@ -119,7 +119,7 @@
 ### 3️⃣ EXPORT TO CSV (WITH EMPTY SKILL POINTS)
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ STEP 3: Export Schedule to shiftDetails_12w.csv             │
+│ STEP 3: Export Schedule to shiftDetails_24w.csv             │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  📝 Format:                                                  │
@@ -170,13 +170,13 @@
 ### 5️⃣ SKILL POINTS UPDATE (based on Feedback)
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ STEP 5: Update Skill Points in shiftDetails_12w.csv         │
+│ STEP 5: Update Skill Points in shiftDetails_24w.csv         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  🔄 UPDATE PROCESS                                           │
 │                                                              │
 │  Option A: MANUAL (начальный этап)                          │
-│     └─> Manager directly edits shiftDetails_12w.csv         │
+│     └─> Manager directly edits shiftDetails_24w.csv         │
 │         └─> Updates: coffee_rating, sandwich_rating, etc.   │
 │                                                              │
 │  Option B: SEMI-AUTOMATED (ML-assisted)                     │
@@ -185,7 +185,7 @@
 │     │   • Output: Predicted skill points                    │
 │     │                                                       │
 │     └─> Manager reviews & approves                          │
-│         └─> Updates shiftDetails_12w.csv                    │
+│         └─> Updates shiftDetails_24w.csv                    │
 │                                                              │
 │  Option C: FULLY AUTOMATED (будущее)                        │
 │     └─> ML Model automatically updates skill points         │
@@ -204,7 +204,7 @@
 │  📊 SKILL AVERAGING MODULE                                   │
 │                                                              │
 │  ┌──────────────────────────────────────────┐              │
-│  │ Load: shiftDetails_12w.csv               │              │
+│  │ Load: shiftDetails_24w.csv               │              │
 │  │  (with updated skill points)             │              │
 │  └──────────────────────────────────────────┘              │
 │              ↓                                               │
@@ -238,19 +238,20 @@
 
 ### CSV Files Structure
 
-#### 📁 shiftWeeks_12w.csv
+#### 📁 shiftWeeks_24w.csv
 ```
 id,date,week_id
 1000,2025-09-01,2025-W36
 1001,2025-09-02,2025-W36
 ...
+1167,2026-02-15,2026-W07
 ```
-**Purpose**: Master list of all shifts  
+**Purpose**: Master list of all shifts (24 weeks coverage)  
 **Updates**: Rarely (only when adding new weeks)
 
 ---
 
-#### 📁 shiftDetails_12w.csv (MASTER FILE)
+#### 📁 shiftDetails_24w.csv (MASTER FILE)
 ```
 shift_id,emp_id,start_time,end_time,coffee_rating,sandwich_rating,
 customer_service_rating,speed_rating,present,role
@@ -388,7 +389,7 @@ submitted_at
 ## 📝 KEY DECISIONS & NOTES
 
 ### 1. Skill Points Storage
-- **Where**: `shiftDetails_12w.csv` (NOT in Employee table)
+- **Where**: `shiftDetails_24w.csv` (NOT in Employee table)
 - **Why**: Skill points vary per shift (same employee can perform differently)
 - **Employee.base_skills**: Average/aggregated from historical shifts
 
@@ -403,7 +404,7 @@ submitted_at
 - **Schedule**: Generated weekly (using latest averages)
 
 ### 4. Data Consistency
-- **shiftDetails_12w.csv** = Single source of truth for assignments + performance
+- **shiftDetails_24w.csv** = Single source of truth for assignments + performance
 - **Feedback table** = Raw feedback data (audit trail)
 - **Employee table** = Aggregated skills (for scheduling)
 

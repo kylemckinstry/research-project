@@ -84,7 +84,7 @@ def main():
     # Configuration
     config_path = "scheduler_config.yaml"
     db_path = "scheduler_v2.1.db"
-    historical_skills_path = "data/shiftDetails_12w.csv"
+    historical_skills_path = "data/shiftDetails_24w.csv"
     week_id = "2025-W48"
     output_csv = "schedule_cp_sat_test.csv"
     
