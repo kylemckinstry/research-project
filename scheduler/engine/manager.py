@@ -7,7 +7,7 @@ from datetime import date
 from typing import Dict, List, Set
 
 import pandas as pd
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from scheduler.domain.models import Assignment, Employee, Shift
 from scheduler.domain.repositories import EmployeeRepository, ShiftRepository
@@ -30,7 +30,7 @@ class ManagerScheduler(BaseScheduler):
     
     def make_schedule(
         self,
-        session: Session,
+        client: firestore.Client,
         week_id: str,
         cfg,
     ) -> List[Assignment]:
@@ -45,12 +45,12 @@ class ManagerScheduler(BaseScheduler):
         - Use default shift times (07:00-15:00)
         """
         # Get managers
-        managers = EmployeeRepository.get_by_role(session, "MANAGER")
+        managers = EmployeeRepository.get_by_role(client, "MANAGER")
         if not managers:
             raise RuntimeError(f"No managers available for scheduling")
         
         # Get shifts for this week
-        shifts = ShiftRepository.get_by_week(session, week_id)
+        shifts = ShiftRepository.get_by_week(client, week_id)
         if not shifts:
             raise RuntimeError(f"No shifts found for week {week_id}")
         

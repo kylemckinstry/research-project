@@ -7,7 +7,7 @@ from datetime import date
 from typing import Dict, List, Set
 
 import pandas as pd
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from scheduler.domain.models import Assignment, Employee, Shift
 from scheduler.domain.repositories import EmployeeRepository, ShiftRepository
@@ -42,7 +42,7 @@ class CohortScheduler(BaseScheduler):
     
     def make_schedule(
         self,
-        session: Session,
+        client: firestore.Client,
         week_id: str,
         cfg,
     ) -> List[Assignment]:
@@ -55,12 +55,12 @@ class CohortScheduler(BaseScheduler):
         - Balance hours across cohort (target 16-40h)
         """
         # Get employees for this role
-        employees_list = EmployeeRepository.get_by_role(session, self.role)
+        employees_list = EmployeeRepository.get_by_role(client, self.role)
         if not employees_list:
             raise RuntimeError(f"No {self.role} staff available for scheduling")
         
         # Get shifts for this week
-        shifts = ShiftRepository.get_by_week(session, week_id)
+        shifts = ShiftRepository.get_by_week(client, week_id)
         if not shifts:
             raise RuntimeError(f"No shifts found for week {week_id}")
         

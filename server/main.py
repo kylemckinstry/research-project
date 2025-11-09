@@ -1,21 +1,20 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import List
+import random
 from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from scheduler.config import load_config, resolve_day_profile
-from scheduler.domain.db import get_session
+from scheduler.domain.db import get_firestore
 from scheduler.domain.models import Assignment
 from scheduler.domain.repositories import (
     AssignmentRepository, EmployeeRepository, ShiftRepository,
 )
 from scheduler.engine.orchestrator import Orchestrator
 from scheduler.services.scoring import calculate_role_fitness
-from .firestore_client import get_firestore
 from google.cloud.firestore_v1 import SERVER_TIMESTAMP
 from datetime import datetime
 
-DB_URL = "sqlite:///scheduler_v2.1.db"
 CONFIG_PATH = Path("scheduler_config.yaml")
 
 app = FastAPI(title="Rostretto Scheduler API", redirect_slashes=False)
@@ -87,9 +86,9 @@ def list_employees():
             return float(x)
         except Exception:
             return float(default)
-    session = get_session(DB_URL)
+    client = get_firestore()
     try:
-        emps = EmployeeRepository.get_all(session)
+        emps = EmployeeRepository.get_all(client)
         return [{
             "employeeId": int(getattr(e, "employee_id")),
             "firstName": getattr(e, "first_name", "") or "",
@@ -103,7 +102,7 @@ def list_employees():
             "speed": f(getattr(e, "skill_speed", getattr(e, "speed", 0.0))),
         } for e in emps]
     finally:
-        session.close()
+        pass  # No need to close Firestore client
 
 @app.post("/assignments/manual")
 def create_manual_assignment(payload: dict):
@@ -127,10 +126,10 @@ def create_manual_assignment(payload: dict):
     if not week or shift_id is None or employee_id is None:
         raise HTTPException(status_code=400, detail="Missing required fields: week, shiftId, employeeId")
     
-    session = get_session(DB_URL)
+    client = get_firestore()
     try:
         # Verify employee exists
-        emp = EmployeeRepository.get_all(session)
+        emp = EmployeeRepository.get_all(client)
         employees = {e.employee_id: e for e in emp}
         if employee_id not in employees:
             raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
@@ -188,7 +187,7 @@ def create_manual_assignment(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating manual assignment: {e}")
     finally:
-        session.close()
+        pass  # No need to close Firestore client
 
 @app.delete("/assignments/manual/{week}/{doc_id}")
 def delete_manual_assignment(week: str, doc_id: str):
@@ -310,12 +309,103 @@ def _fitness_denom(weights: dict, role: str) -> float:
     return float(denom or 1.0)
 
 def _role_to_demand(role: str) -> str:
+    """Convert role to demand category for business reporting."""
     r = (role or "").upper()
     if r == "BARISTA":
         return "Coffee"
     if r == "SANDWICH":
         return "Sandwiches"
+    if r == "WAITER":
+        return "Service"  # Front-of-house service demand
+    if r == "MANAGER":
+        return "Management"  # Supervision/management demand
     return "Mixed"
+
+def _determine_primary_role(role_counts: dict[str, int]) -> str:
+    """
+    Determine primary role from counts, with smart prioritization.
+    
+    Strategy:
+    1. If specialty roles (BARISTA, SANDWICH) have significant presence, prioritize them
+    2. Only show MIXED if roles are truly balanced (no clear leader)
+    """
+    if not role_counts:
+        return "MIXED"
+    
+    # Get sorted roles by count (descending)
+    sorted_roles = sorted(role_counts.items(), key=lambda kv: kv[1], reverse=True)
+    top_role, top_count = sorted_roles[0]
+    
+    # If there's only one role, return it
+    if len(sorted_roles) == 1:
+        return top_role
+    
+    second_role, second_count = sorted_roles[1] if len(sorted_roles) > 1 else ("", 0)
+    total = sum(role_counts.values())
+    
+    # Clear leader (>50% of assignments)
+    if top_count / total > 0.5:
+        return top_role
+    
+    # Specialty roles (BARISTA, SANDWICH) get priority if they're close to the top
+    specialty_roles = ["BARISTA", "SANDWICH"]
+    for role in specialty_roles:
+        count = role_counts.get(role, 0)
+        if count > 0 and count >= top_count * 0.75:  # Within 25% of top
+            return role
+    
+    # If top role is significant (>40%), use it
+    if top_count / total >= 0.4:
+        return top_role
+    
+    # Otherwise, truly mixed
+    return "MIXED"
+
+def _determine_demand_for_date(date_str: str, week_id: str, cfg) -> str:
+    """
+    Deterministically choose demand for a date using weighted random with seed.
+    
+    Same week_id + date = same demand every time (deterministic).
+    Uses configured weights to favor Coffee and Sandwich over Mixed.
+    
+    Args:
+        date_str: Date in YYYY-MM-DD format
+        week_id: ISO week identifier (e.g., "2025-W46")
+        cfg: Scheduler config
+        
+    Returns:
+        Demand string: "Coffee", "Sandwiches", "Service", "Management", or "Mixed"
+    """
+    # Create deterministic seed from week and date
+    seed_str = f"{week_id}-{date_str}"
+    random.seed(seed_str)
+    
+    # Parse date to get day of week
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        day_name = dt.strftime("%a").upper()  # MON, TUE, etc.
+    except:
+        day_name = "MON"
+    
+    # Check if there's a config override for this specific day type
+    day_profile = resolve_day_profile(cfg, dt if 'dt' in locals() else None, None)
+    config_primary = getattr(day_profile, "primary", "").upper()
+    
+    # If config explicitly sets a demand, use it
+    if config_primary and config_primary != "MIXED":
+        return _role_to_demand(config_primary)
+    
+    # Otherwise, use weighted random selection
+    # Weights favor specialty demands (Coffee, Sandwich) over generic (Mixed)
+    choices = ["BARISTA", "SANDWICH", "WAITER", "MANAGER", "MIXED"]
+    weights = [45, 35, 10, 5, 5]  # 45% Coffee, 35% Sandwich, 10% Service, 5% Management, 5% Mixed
+    
+    # Weekend bias: more Coffee demand on Sat/Sun
+    if day_name in ["SAT", "SUN"]:
+        weights = [55, 25, 10, 5, 5]  # 55% Coffee on weekends
+    
+    selected_role = random.choices(choices, weights=weights, k=1)[0]
+    return _role_to_demand(selected_role)
 
 def _bucket_traffic(values: list[float]) -> tuple[float, float]:
     """Return (q33, q66). Handles small N safely."""
@@ -354,21 +444,17 @@ def _traffic_label(v: float, q33: float, q66: float) -> str:
         return "medium"
     return "high"
 
-def _load_manual_assignments_from_firestore(session, manual_assignments_data):
+def _load_manual_assignments_from_firestore(client, manual_assignments_data):
     """
     Load manual assignments from Firestore data, deduplicating any duplicates.
     Returns a list of Assignment objects.
     """
-    def _load_shift_by_id(sess, sid):
+    def _load_shift_by_id(cli, sid):
         try:
-            if hasattr(ShiftRepository, "get_by_id"): return ShiftRepository.get_by_id(sess, sid)
-            if hasattr(ShiftRepository, "get"): return ShiftRepository.get(sess, sid)
+            if hasattr(ShiftRepository, "get_by_id"): return ShiftRepository.get_by_id(cli, sid)
+            if hasattr(ShiftRepository, "get"): return ShiftRepository.get(cli, sid)
         except Exception: pass
-        try:
-            from scheduler.domain.models import Shift
-            return sess.get(Shift, sid)
-        except Exception:
-            return None
+        return None
     
     existing_assignments: List[Assignment] = []
     seen_assignments = set()  # Track (emp_id, shift_id, start_time, end_time) to prevent duplicates
@@ -383,7 +469,7 @@ def _load_manual_assignments_from_firestore(session, manual_assignments_data):
         if shift_id and employee_id and start_time_str and end_time_str:
             try:
                 # Load the shift to get the date
-                shift = _load_shift_by_id(session, shift_id)
+                shift = _load_shift_by_id(client, shift_id)
                 if not shift:
                     print(f"[WARN] Could not load shift {shift_id} for manual assignment")
                     continue
@@ -451,40 +537,36 @@ def run_schedule(payload: dict):
     if not week:
         raise HTTPException(status_code=400, detail="Missing 'week' in body")
     
-    session = get_session(DB_URL)
+    client = get_firestore()
     try:
         cfg = load_config(CONFIG_PATH)
         scheduler_order = ["MANAGER", "BARISTA", "SANDWICH", "WAITER"]
         orchestrator = Orchestrator(scheduler_order)
         
         # Build schedule (orchestrator deduplicates automatically)
-        assignments: List[Assignment] = orchestrator.build_schedule(session, week, cfg, None)
+        assignments: List[Assignment] = orchestrator.build_schedule(client, week, cfg, None)
         
-        # Save to SQLite
-        AssignmentRepository.delete_by_week(session, week)
-        AssignmentRepository.bulk_create(session, assignments)
+        # Save to Firestore (assignments are stored in weeks/{week}/assignments)
+        AssignmentRepository.delete_by_week(client, week)
+        AssignmentRepository.bulk_create(client, assignments, week)
         
         # Prepare for Firestore save
         db = get_firestore()
         week_ref = db.collection("weeks").document(week)
         weights = getattr(cfg, "weights", None)
         weights_dict = weights.__dict__ if weights else {}
-        employees = {e.employee_id: e for e in EmployeeRepository.get_all(session)}
+        employees = {e.employee_id: e for e in EmployeeRepository.get_all(client)}
         
         # Helper to load shift
-        def _load_shift_by_id(sess, sid):
+        def _load_shift_by_id(cli, sid):
             try:
                 if hasattr(ShiftRepository, "get_by_id"):
-                    return ShiftRepository.get_by_id(sess, sid)
+                    return ShiftRepository.get_by_id(cli, sid)
                 if hasattr(ShiftRepository, "get"):
-                    return ShiftRepository.get(sess, sid)
+                    return ShiftRepository.get(cli, sid)
             except:
                 pass
-            try:
-                from scheduler.domain.models import Shift
-                return sess.get(Shift, sid)
-            except:
-                return None
+            return None
         
         # Clear Firestore
         for col in ("shifts", "assignments"):
@@ -498,7 +580,7 @@ def run_schedule(payload: dict):
         
         s_batch = db.batch()
         for sid in shift_ids:
-            s = _load_shift_by_id(session, sid)
+            s = _load_shift_by_id(client, sid)
             if not s:
                 continue
             
@@ -524,11 +606,12 @@ def run_schedule(payload: dict):
             })
             
             date_by_shift[int(getattr(s, "id", sid))] = date_val
-            if date_val and role_val:
-                roles_by_date.setdefault(date_val, {})
-                roles_by_date[date_val][role_val] = roles_by_date[date_val].get(role_val, 0) + 1
+            # Don't populate roles_by_date from shifts - will use assignment roles instead
         
         s_batch.commit()
+        
+        # Clear roles_by_date to track actual assignment roles, not shift roles
+        roles_by_date = {}
         
         # Save assignments to Firestore (simplified - no manual logic)
         batch = db.batch()
@@ -561,13 +644,18 @@ def run_schedule(payload: dict):
             
             batch.set(doc_ref, doc_data)
             
-            # Stats
+            # Stats - track role counts from assignments, not shifts
             date_val = date_by_shift.get(int(a.shift_id))
             if date_val:
                 st = day_stats.setdefault(date_val, {"assigned": 0, "mismatch": 0})
                 st["assigned"] += 1
                 if norm < 0.7:
                     st["mismatch"] += 1
+                
+                # Track actual assigned roles for demand calculation
+                if role:
+                    roles_by_date.setdefault(date_val, {})
+                    roles_by_date[date_val][role] = roles_by_date[date_val].get(role, 0) + 1
         
         batch.commit()
         
@@ -579,9 +667,9 @@ def run_schedule(payload: dict):
         ind_batch = db.batch()
         
         for date_val in sorted(set(list(roles_by_date.keys()) + list(day_stats.keys()))):
-            role_counts = roles_by_date.get(date_val, {})
-            top_role = max(role_counts.items(), key=lambda kv: kv[1])[0] if role_counts else "MIXED"
-            demand = _role_to_demand(top_role)
+            # Use deterministic weighted random to choose demand
+            demand = _determine_demand_for_date(date_val, week, cfg)
+            
             assigned = day_stats.get(date_val, {}).get("assigned", 0)
             mismatches = day_stats.get(date_val, {}).get("mismatch", 0)
             traffic = _traffic_label(assigned, q33, q66) if signals else "medium"
@@ -600,7 +688,7 @@ def run_schedule(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scheduler error: {e}")
     finally:
-        session.close()
+        pass  # No need to close Firestore client
 
 @app.post("/schedule/run-day")
 def run_day(payload: dict):
@@ -613,7 +701,7 @@ def run_day(payload: dict):
         dt = datetime.strptime(date_str, "%Y-%m-%d")
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid 'date' format, expected YYYY-MM-DD")
-    session = get_session(DB_URL)
+    client = get_firestore()
     try:
         cfg = load_config(CONFIG_PATH)
         scheduler_order = ["MANAGER", "BARISTA", "SANDWICH", "WAITER"]
@@ -624,26 +712,22 @@ def run_day(payload: dict):
         week_ref = db.collection("weeks").document(week)
         
         # Generate schedule for entire week
-        all_assignments: List[Assignment] = orchestrator.build_schedule(session, week, cfg, None)
+        all_assignments: List[Assignment] = orchestrator.build_schedule(client, week, cfg, None)
         
         # Filter to only the requested day's assignments
-        employees = {e.employee_id: e for e in EmployeeRepository.get_all(session)}
-        def _load_shift_by_id(sess, sid):
+        employees = {e.employee_id: e for e in EmployeeRepository.get_all(client)}
+        def _load_shift_by_id(cli, sid):
             try:
-                if hasattr(ShiftRepository, "get_by_id"): return ShiftRepository.get_by_id(sess, sid)
-                if hasattr(ShiftRepository, "get"): return ShiftRepository.get(sess, sid)
+                if hasattr(ShiftRepository, "get_by_id"): return ShiftRepository.get_by_id(cli, sid)
+                if hasattr(ShiftRepository, "get"): return ShiftRepository.get(cli, sid)
             except Exception: pass
-            try:
-                from scheduler.domain.models import Shift
-                return sess.get(Shift, sid)
-            except Exception:
-                return None
+            return None
         
         # Identify shifts for the requested day
         shifts_for_week = {}
         for a in all_assignments:
             if a.shift_id not in shifts_for_week:
-                s = _load_shift_by_id(session, a.shift_id)
+                s = _load_shift_by_id(client, a.shift_id)
                 if s: shifts_for_week[a.shift_id] = s
         
         # Find which shift IDs belong to the requested date
@@ -680,7 +764,6 @@ def run_day(payload: dict):
             if str(data.get("date", "")) == date_str:
                 d.reference.delete()
         s_batch = db.batch()
-        role_counts_today: dict[str, int] = {}
         for sid in sorted(day_shift_ids):
             s = shifts_for_week.get(sid)
             if not s: continue
@@ -712,8 +795,8 @@ def run_day(payload: dict):
                         dt_for_day = datetime.strptime(date_val, "%Y-%m-%d")
                         dp = resolve_day_profile(cfg, dt_for_day, None)
                         prim = (getattr(dp, "primary", "") or "").upper()
-                        prim_map = {"COFFEE": "BARISTA", "SANDWICH": "SANDWICH", "MIXED": "MIXED"}
-                        role_val = prim_map.get(prim, role_val or "MIXED")
+                        # Primary now uses proper role names (BARISTA, SANDWICH, MIXED)
+                        role_val = prim if prim else (role_val or "MIXED")
                     except Exception:
                         role_val = role_val or "MIXED"
             s_ref = week_ref.collection("shifts").document(str(getattr(s, "id", sid)))
@@ -725,8 +808,16 @@ def run_day(payload: dict):
                 "end": end_val,
             })
             if date_val == date_str and role_val:
-                role_counts_today[role_val] = role_counts_today.get(role_val, 0) + 1
+                # Don't track role_counts from shifts - will use assignment roles
+                pass
         s_batch.commit()
+        
+        # Track role counts from actual assignments, not shifts
+        role_counts_today: dict[str, int] = {}
+        for a in day_assignments:
+            role = (a.role or "").upper()
+            if role:
+                role_counts_today[role] = role_counts_today.get(role, 0) + 1
         
         # Delete only this day's existing assignments (leave other days untouched)
         existing_assign_docs = list(week_ref.collection("assignments").stream())
@@ -794,8 +885,9 @@ def run_day(payload: dict):
             else:
                 traffic = "high"
         
-        top_role = max(role_counts_today.items(), key=lambda kv: kv[1])[0] if role_counts_today else "MIXED"
-        demand = _role_to_demand(top_role)
+        # Use deterministic weighted random to choose demand
+        demand = _determine_demand_for_date(date_str, week, cfg)
+        
         ind_ref = week_ref.collection("indicators").document(date_str)
         ind_batch = db.batch()
         ind_batch.set(ind_ref, {
@@ -808,7 +900,7 @@ def run_day(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scheduler error: {e}")
     finally:
-        session.close()
+        pass  # No need to close Firestore client
 
 @app.get("/schedule/{week}")
 def get_schedule(week: str):
@@ -828,18 +920,8 @@ def get_schedule(week: str):
             "endTime": data.get("endTime"),
         } for d in docs]
     except Exception:
-        session = get_session(DB_URL)
-        try:
-            assigns = AssignmentRepository.list_by_week(session, week)
-            return [{
-                "id": a.id,
-                "shiftId": a.shift_id,
-                "employeeId": a.emp_id,
-                "role": (a.role or "").upper(),
-                "isManual": False,
-            } for a in assigns]
-        finally:
-            session.close()
+        # Fallback is no longer needed since we're not using SQLite
+        return []
 
 @app.get("/shifts/{week}")
 def get_shifts(week: str):
@@ -858,35 +940,8 @@ def get_shifts(week: str):
             } for d in docs]
     except Exception:
         pass
-    session = get_session(DB_URL)
-    try:
-        assigns = AssignmentRepository.list_by_week(session, week)
-        shift_ids = sorted({a.shift_id for a in assigns})
-        def _load_shift_by_id(sess, sid):
-            try:
-                if hasattr(ShiftRepository, "get_by_id"): return ShiftRepository.get_by_id(sess, sid)
-                if hasattr(ShiftRepository, "get"): return ShiftRepository.get(sess, sid)
-            except Exception: pass
-            try:
-                from scheduler.domain.models import Shift
-                return sess.get(Shift, sid)
-            except Exception:
-                return None
-        out = []
-        for sid in shift_ids:
-            s = _load_shift_by_id(session, sid)
-            if not s: continue
-            out.append({
-                "id": getattr(s, "id", sid),
-                "shiftId": getattr(s, "id", sid),
-                "role": str(_first(s, ["role", "position", "kind", "role_name", "name"], "")).upper(),
-                "date": str(_first(s, ["date", "day", "shift_date", "date_str"], "")),
-                "start": str(_first(s, ["start_time", "start", "starts_at", "start_str", "start_dt", "starttime"], "")),
-                "end": str(_first(s, ["end_time", "end", "ends_at", "end_str", "end_dt", "endtime"], "")),
-            })
-        return out
-    finally:
-        session.close()
+    # Return empty list if no shifts found
+    return []
 
 @app.get("/indicators/{week}")
 def get_indicators(week: str):
@@ -933,10 +988,16 @@ def create_shifts(payload: dict):
     if not shifts_data:
         raise HTTPException(status_code=400, detail="Missing 'shifts' array in body")
     
-    session = get_session(DB_URL)
+    client = get_firestore()
     try:
         from scheduler.domain.models import Shift
         created_shifts = []
+        
+        # Generate auto-incrementing shift IDs
+        # Get existing shifts to find the max ID
+        all_shifts = ShiftRepository.get_all(client)
+        max_id = max([s.shift_id for s in all_shifts], default=0)
+        next_id = max_id + 1
         
         for shift_info in shifts_data:
             date_str = shift_info.get("date")
@@ -947,36 +1008,39 @@ def create_shifts(payload: dict):
             if not date_str or not start_time or not end_time:
                 continue
             
-            # Create shift in database
+            # Create shift
             shift = Shift(
+                shift_id=next_id,
                 date=date_str,
+                week_id=week,
+                role=role.upper(),
                 start_time=start_time,
-                end_time=end_time,
-                role=role.upper()
+                end_time=end_time
             )
-            session.add(shift)
-            session.flush()  # Get the real shift.id before commit
+            
+            # Save to main shifts collection
+            ShiftRepository.create(client, shift)
             
             created_shifts.append({
-                "id": shift.id,  # Store real SQLite ID
+                "id": shift.shift_id,
                 "date": date_str,
                 "start": start_time,
                 "end": end_time,
                 "role": role.upper()
             })
+            
+            next_id += 1
         
-        session.commit()
-        
-        # Also save to Firestore for frontend access with REAL shift IDs
+        # Also save to week-specific collection for frontend access
         db = get_firestore()
         week_ref = db.collection("weeks").document(week)
         s_batch = db.batch()
         
         for shift_info in created_shifts:
-            real_shift_id = shift_info["id"]
-            s_ref = week_ref.collection("shifts").document(str(real_shift_id))
+            shift_id = shift_info["id"]
+            s_ref = week_ref.collection("shifts").document(str(shift_id))
             s_batch.set(s_ref, {
-                "shiftId": real_shift_id,  # Use REAL SQLite shift ID
+                "shiftId": shift_id,
                 "role": shift_info["role"],
                 "date": shift_info["date"],
                 "start": shift_info["start"],
@@ -988,7 +1052,4 @@ def create_shifts(payload: dict):
         return {"week": week, "created": len(created_shifts), "shifts": created_shifts}
     
     except Exception as e:
-        session.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating shifts: {e}")
-    finally:
-        session.close()

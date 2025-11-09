@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from scheduler.domain.models import Assignment, Employee
 from scheduler.domain.repositories import AssignmentRepository, EmployeeRepository, ShiftRepository
@@ -35,7 +35,7 @@ class Orchestrator:
     
     def build_schedule(
         self,
-        session: Session,
+        client: firestore.Client,
         week_id: str,
         cfg,
         existing_assignments: List[Assignment] | None = None,
@@ -49,7 +49,7 @@ class Orchestrator:
         3. Return final assignments
         
         Args:
-            session: Database session
+            client: Firestore client
             week_id: ISO week identifier
             cfg: SchedulerConfig
             existing_assignments: Ignored (for backwards compatibility)
@@ -75,7 +75,7 @@ class Orchestrator:
             role_name = scheduler.get_role_name()
             print(f"\n[INFO] Running {role_name} scheduler...")
             try:
-                assignments = scheduler.make_schedule(session, week_id, cfg)
+                assignments = scheduler.make_schedule(client, week_id, cfg)
                 all_auto_assignments.extend(assignments)
                 print(f"[OK] {role_name}: generated {len(assignments)} assignments")
             except RuntimeError as e:
@@ -84,7 +84,7 @@ class Orchestrator:
         
         print(f"[INFO] Total assignments before deduplication: {len(all_auto_assignments)}")
         
-        # DEBUG: Show what assignments were created
+        # DEBUG: Shows what assignments were created
         from collections import Counter
         assignment_counts = Counter((a.shift_id, a.emp_id) for a in all_auto_assignments)
         duplicates_found = {k: v for k, v in assignment_counts.items() if v > 1}
@@ -113,7 +113,7 @@ class Orchestrator:
         
         # Validation
         print(f"\n[INFO] Validating complete schedule...")
-        employees = EmployeeRepository.get_all(session)
+        employees = EmployeeRepository.get_all(client)
         validate_assignment_constraints(deduplicated, employees, cfg)
         
         print(f"[OK] Generated {len(deduplicated)} unique assignments")
@@ -121,7 +121,7 @@ class Orchestrator:
 
 
 def build_week_schedule(
-    session: Session,
+    client: firestore.Client,
     week_id: str,
     cfg,
     scheduler_order: List[str] | None = None,
@@ -131,7 +131,7 @@ def build_week_schedule(
     Convenience function to build a week schedule using the orchestrator.
     
     Args:
-        session: Database session
+        client: Firestore client
         week_id: ISO week identifier
         cfg: SchedulerConfig
         scheduler_order: Optional custom scheduler execution order
@@ -141,16 +141,16 @@ def build_week_schedule(
         List of assignments
     """
     orchestrator = Orchestrator(scheduler_order)
-    assignments = orchestrator.build_schedule(session, week_id, cfg)
+    assignments = orchestrator.build_schedule(client, week_id, cfg)
     
     if persist:
         # Delete existing assignments for this week
-        deleted = AssignmentRepository.delete_by_week(session, week_id)
+        deleted = AssignmentRepository.delete_by_week(client, week_id)
         if deleted > 0:
             print(f"[INFO] Deleted {deleted} existing assignments for {week_id}")
         
         # Persist new assignments
-        AssignmentRepository.bulk_create(session, assignments)
+        AssignmentRepository.bulk_create(client, assignments, week_id)
         print(f"[INFO] Persisted {len(assignments)} assignments to database")
     
     return assignments

@@ -87,7 +87,7 @@ def calculate_shift_hours(start_hm: str, end_hm: str) -> float:
 
 
 def create_datetime_from_date_and_time(
-    shift_date: date,
+    shift_date,
     time_hm: str,
     timezone: str = "Australia/Sydney",
 ) -> datetime:
@@ -95,13 +95,17 @@ def create_datetime_from_date_and_time(
     Create timezone-aware datetime from date and time string.
     
     Args:
-        shift_date: Date of the shift
+        shift_date: Date of the shift (date object or string in YYYY-MM-DD format)
         time_hm: Time string like "07:00"
         timezone: Timezone name
     
     Returns:
         Timezone-aware datetime
     """
+    # Handle both date objects and string dates
+    if isinstance(shift_date, str):
+        shift_date = datetime.strptime(shift_date, "%Y-%m-%d").date()
+    
     time_obj = parse_time_string(time_hm)
     naive_dt = datetime.combine(shift_date, time_obj)
     aware_dt = pd.Timestamp(naive_dt).tz_localize(timezone).to_pydatetime()

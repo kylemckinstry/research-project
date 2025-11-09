@@ -1,6 +1,6 @@
 """Domain models and data access layer."""
 
-from .models import Employee, Shift, Assignment, Feedback, Base
+from .models import Employee, Shift, Assignment, Feedback
 from .repositories import EmployeeRepository, ShiftRepository, AssignmentRepository, FeedbackRepository
 
 __all__ = [
@@ -8,7 +8,6 @@ __all__ = [
     "Shift",
     "Assignment",
     "Feedback",
-    "Base",
     "EmployeeRepository",
     "ShiftRepository",
     "AssignmentRepository",

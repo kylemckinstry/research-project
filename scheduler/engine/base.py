@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List
 
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from scheduler.domain.models import Assignment
 
@@ -23,7 +23,7 @@ class BaseScheduler(ABC):
     @abstractmethod
     def make_schedule(
         self,
-        session: Session,
+        client: firestore.Client,
         week_id: str,
         cfg,
     ) -> List[Assignment]:
@@ -31,12 +31,12 @@ class BaseScheduler(ABC):
         Generate assignments for this scheduler's role(s) for the specified week.
         
         Args:
-            session: Database session for data access
+            client: Firestore client for data access
             week_id: ISO week identifier (e.g., "2025-W36")
             cfg: SchedulerConfig with business rules
         
         Returns:
-            List of Assignment objects (not yet persisted to database)
+            List of Assignment objects that have not yet been persisted to the database
         
         Raises:
             RuntimeError: If scheduling fails due to insufficient staff or constraints

@@ -55,7 +55,7 @@ class DayProfile:
     customer_service: float = 1.0
     threshold: float = 0.70
     traffic: str = "medium"
-    primary: str = "Mixed"
+    primary: str = "MIXED"
     availability: float = 0.80
 
 @dataclass
@@ -196,9 +196,9 @@ def load_config(path: str | Path) -> SchedulerConfig:
         "TUE": DayProfile(),
         "WED": DayProfile(),
         "THU": DayProfile(),
-        "FRI": DayProfile(traffic="high", coffee=1.3, speed=1.1, threshold=0.75, availability=0.90, primary="Coffee"),
-        "SAT": DayProfile(traffic="high", coffee=1.4, sandwich=1.1, speed=1.1, threshold=0.75, availability=0.95, primary="Coffee"),
-        "SUN": DayProfile(traffic="medium", coffee=1.2, customer_service=1.1, threshold=0.70, availability=0.85, primary="Coffee"),
+        "FRI": DayProfile(traffic="high", coffee=1.3, speed=1.1, threshold=0.75, availability=0.90, primary="BARISTA"),
+        "SAT": DayProfile(traffic="high", coffee=1.4, sandwich=1.1, speed=1.1, threshold=0.75, availability=0.95, primary="BARISTA"),
+        "SUN": DayProfile(traffic="medium", coffee=1.2, customer_service=1.1, threshold=0.70, availability=0.85, primary="BARISTA"),
     }
     weekdays: Dict[Weekday, DayProfile] = {}
     for k, v in default_weekdays.items():

@@ -1,4 +1,4 @@
-"""CSV export utilities to export data from database."""
+"""CSV export utilities to export data from Firestore."""
 
 from __future__ import annotations
 
@@ -6,18 +6,18 @@ from pathlib import Path
 from typing import List
 
 import pandas as pd
-from sqlalchemy.orm import Session
+from google.cloud import firestore
 
 from scheduler.domain.models import Assignment, Employee
 from scheduler.domain.repositories import AssignmentRepository, EmployeeRepository
 
 
-def export_assignments_csv(session: Session, csv_path: str | Path, week_id: str | None = None) -> int:
+def export_assignments_csv(client: firestore.Client, csv_path: str | Path, week_id: str | None = None) -> int:
     """
-    Export assignments from database to CSV.
+    Export assignments from Firestore to CSV.
     
     Args:
-        session: Database session
+        client: Firestore client
         csv_path: Path to output CSV
         week_id: Optional week_id to filter
     
@@ -26,9 +26,9 @@ def export_assignments_csv(session: Session, csv_path: str | Path, week_id: str 
     """
     # Get assignments
     if week_id:
-        assignments = AssignmentRepository.get_by_week(session, week_id)
+        assignments = AssignmentRepository.get_by_week(client, week_id)
     else:
-        assignments = AssignmentRepository.get_all(session)
+        assignments = AssignmentRepository.get_all(client)
     
     # Convert to DataFrame
     records = []
@@ -47,19 +47,19 @@ def export_assignments_csv(session: Session, csv_path: str | Path, week_id: str 
     return len(records)
 
 
-def export_employees_csv(session: Session, csv_path: str | Path) -> int:
+def export_employees_csv(client: firestore.Client, csv_path: str | Path) -> int:
     """
-    Export employees from database to CSV.
+    Export employees from Firestore to CSV.
     
     Args:
-        session: Database session
+        client: Firestore client
         csv_path: Path to output CSV
     
     Returns:
         Number of employees exported
     """
     # Get all employees
-    employees = EmployeeRepository.get_all(session)
+    employees = EmployeeRepository.get_all(client)
     
     # Convert to DataFrame
     records = []
