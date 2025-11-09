@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal, Any
 
 
 def _maybe_load_yaml(path: Path) -> Optional[dict]:
@@ -45,6 +45,25 @@ class DefaultShift:
     duration_hours: int = 8
 
 
+Weekday = Literal["MON","TUE","WED","THU","FRI","SAT","SUN"]
+
+@dataclass
+class DayProfile:
+    coffee: float = 1.0
+    sandwich: float = 1.0
+    speed: float = 1.0
+    customer_service: float = 1.0
+    threshold: float = 0.70
+    traffic: str = "medium"
+    primary: str = "Mixed"
+    availability: float = 0.80
+
+@dataclass
+class DemandConfig:
+    weekdays: Dict[Weekday, DayProfile] = field(default_factory=dict)
+    overrides: Dict[str, DayProfile] = field(default_factory=dict)
+
+
 @dataclass
 class SchedulerConfig:
     timezone: str = "Australia/Sydney"
@@ -77,6 +96,24 @@ class SchedulerConfig:
     schedule_busy_days_first: bool = False
     reserve_hours_for_weekend: Dict[str, float] = field(default_factory=dict)
     weekend_fallback: Dict[str, dict] = field(default_factory=dict)
+    demand: DemandConfig = field(default_factory=DemandConfig)
+
+
+_WD_FROM_IDX = {0:"MON",1:"TUE",2:"WED",3:"THU",4:"FRI",5:"SAT",6:"SUN"}
+
+
+def _to_day_profile(d: dict | None) -> DayProfile:
+    d = d or {}
+    return DayProfile(
+        coffee=float(d.get("coffee", 1.0)),
+        sandwich=float(d.get("sandwich", 1.0)),
+        speed=float(d.get("speed", 1.0)),
+        customer_service=float(d.get("customer_service", 1.0)),
+        threshold=float(d.get("threshold", 0.70)),
+        traffic=str(d.get("traffic", "medium")),
+        primary=str(d.get("primary", "Mixed")),
+        availability=float(d.get("availability", 0.80)),
+    )
 
 
 def load_config(path: str | Path) -> SchedulerConfig:
@@ -152,6 +189,25 @@ def load_config(path: str | Path) -> SchedulerConfig:
     reserve_hours_for_weekend = raw.get("reserve_hours_for_weekend", {})
     weekend_fallback = raw.get("weekend_fallback", {})
 
+    dem_raw: dict = raw.get("demand") or {}
+    wk_raw: dict = dem_raw.get("weekdays") or {}
+    default_weekdays: Dict[Weekday, DayProfile] = {
+        "MON": DayProfile(),
+        "TUE": DayProfile(),
+        "WED": DayProfile(),
+        "THU": DayProfile(),
+        "FRI": DayProfile(traffic="high", coffee=1.3, speed=1.1, threshold=0.75, availability=0.90, primary="Coffee"),
+        "SAT": DayProfile(traffic="high", coffee=1.4, sandwich=1.1, speed=1.1, threshold=0.75, availability=0.95, primary="Coffee"),
+        "SUN": DayProfile(traffic="medium", coffee=1.2, customer_service=1.1, threshold=0.70, availability=0.85, primary="Coffee"),
+    }
+    weekdays: Dict[Weekday, DayProfile] = {}
+    for k, v in default_weekdays.items():
+        supplied = wk_raw.get(k) or wk_raw.get(k.capitalize()) or wk_raw.get(k.title())
+        weekdays[k] = _to_day_profile(supplied) if supplied is not None else v
+    ov_raw: dict = dem_raw.get("overrides") or {}
+    ov: Dict[str, DayProfile] = { str(d): _to_day_profile(p) for d, p in ov_raw.items() }
+    demand = DemandConfig(weekdays=weekdays, overrides=ov)
+
     cfg = SchedulerConfig(
         timezone=tz,
         default_shift=default_shift,
@@ -168,6 +224,7 @@ def load_config(path: str | Path) -> SchedulerConfig:
         reserve_hours_for_weekend=reserve_hours_for_weekend,
         weekend_fallback=weekend_fallback,
         weekend_requirements=weekend_requirements,
+        demand=demand,
     )
     _validate_config(cfg)
     return cfg
@@ -189,12 +246,10 @@ def _validate_config(cfg: SchedulerConfig) -> None:
                 )
     if cfg.hours_caps.max_hours_per_week_per_employee <= 0:
         raise ValueError("hours_caps.max_hours_per_week_per_employee must be positive")
-    # Basic validation for role_time_windows structure (optional)
     if cfg.role_time_windows:
         for role, mapping in cfg.role_time_windows.items():
             if not isinstance(mapping, dict):
                 raise ValueError("role_time_windows entries must be dicts per role")
-    # Validate hours policy
     for role, pol in cfg.hours_policy.items():
         for key in ("target_min", "target_max", "hard_cap"):
             if key not in pol:
@@ -203,3 +258,10 @@ def _validate_config(cfg: SchedulerConfig) -> None:
             raise ValueError(f"hours_policy target_min > target_max for role {role}")
 
 
+from datetime import datetime
+
+def resolve_day_profile(cfg: SchedulerConfig, dt: datetime, override: Optional[dict] = None) -> DayProfile:
+    if override:
+        return _to_day_profile(override)
+    wd = _WD_FROM_IDX[dt.weekday()]
+    return cfg.demand.weekdays[wd]

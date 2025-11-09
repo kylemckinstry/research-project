@@ -38,22 +38,29 @@ class Orchestrator:
         session: Session,
         week_id: str,
         cfg,
+        existing_assignments: List[Assignment] | None = None,
     ) -> List[Assignment]:
         """
         Build complete schedule for a week using all role schedulers.
+        
+        Simple logic:
+        1. Run all role schedulers to generate assignments
+        2. Deduplicate: ensure each employee is assigned to each shift only once
+        3. Return final assignments
         
         Args:
             session: Database session
             week_id: ISO week identifier
             cfg: SchedulerConfig
+            existing_assignments: Ignored (for backwards compatibility)
         
         Returns:
-            List of all assignments for the week
+            List of deduplicated assignments
         """
         print(f"[INFO] Orchestrator: Building schedule for {week_id}")
         print(f"[INFO] Scheduler order: {self.scheduler_order}")
         
-        # Create schedulers in configured order
+        # Create and run schedulers
         schedulers: List[BaseScheduler] = []
         for role in self.scheduler_order:
             if role == "MANAGER":
@@ -62,30 +69,55 @@ class Orchestrator:
                 schedulers.append(SandwichScheduler())
             elif role in ["BARISTA", "WAITER"]:
                 schedulers.append(CohortScheduler(role))
-            else:
-                print(f"[WARN] Unknown role {role} in scheduler_order, skipping")
         
-        # Run each scheduler
-        all_assignments: List[Assignment] = []
+        all_auto_assignments: List[Assignment] = []
         for scheduler in schedulers:
             role_name = scheduler.get_role_name()
             print(f"\n[INFO] Running {role_name} scheduler...")
-            
             try:
                 assignments = scheduler.make_schedule(session, week_id, cfg)
-                all_assignments.extend(assignments)
-                print(f"[OK] {role_name} scheduler completed: {len(assignments)} assignments")
+                all_auto_assignments.extend(assignments)
+                print(f"[OK] {role_name}: generated {len(assignments)} assignments")
             except RuntimeError as e:
-                print(f"[ERROR] {role_name} scheduler failed: {e}")
+                print(f"[ERROR] {role_name} failed: {e}")
                 raise
         
-        # Global validation
+        print(f"[INFO] Total assignments before deduplication: {len(all_auto_assignments)}")
+        
+        # DEBUG: Show what assignments were created
+        from collections import Counter
+        assignment_counts = Counter((a.shift_id, a.emp_id) for a in all_auto_assignments)
+        duplicates_found = {k: v for k, v in assignment_counts.items() if v > 1}
+        if duplicates_found:
+            print(f"[WARN] Found {len(duplicates_found)} (shift, employee) pairs with duplicates BEFORE deduplication:")
+            for (shift_id, emp_id), count in list(duplicates_found.items())[:5]:  # Show first 5
+                print(f"[WARN]   Shift {shift_id}, Employee {emp_id}: {count} times")
+        
+        # Deduplicate: Keep only first assignment for each (shift_id, employee_id) pair
+        seen: set[tuple[int, int]] = set()
+        deduplicated: List[Assignment] = []
+        skipped = 0
+        
+        for a in all_auto_assignments:
+            key = (a.shift_id, a.emp_id)
+            if key in seen:
+                skipped += 1
+                print(f"[DEBUG] Skipping duplicate: Employee {a.emp_id} (role={a.role}) already assigned to shift {a.shift_id}")
+                continue
+            
+            seen.add(key)
+            deduplicated.append(a)
+        
+        if skipped > 0:
+            print(f"[INFO] Removed {skipped} duplicate assignments")
+        
+        # Validation
         print(f"\n[INFO] Validating complete schedule...")
         employees = EmployeeRepository.get_all(session)
-        validate_assignment_constraints(all_assignments, employees, cfg)
+        validate_assignment_constraints(deduplicated, employees, cfg)
         
-        print(f"[OK] Orchestrator: Generated {len(all_assignments)} total assignments")
-        return all_assignments
+        print(f"[OK] Generated {len(deduplicated)} unique assignments")
+        return deduplicated
 
 
 def build_week_schedule(
@@ -122,4 +154,3 @@ def build_week_schedule(
         print(f"[INFO] Persisted {len(assignments)} assignments to database")
     
     return assignments
-
