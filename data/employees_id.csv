@@ -3,7 +3,10 @@ employee_id,first_name,last_name,primary_role,coffee_rating,sandwich_rating,cust
 1002,Mia,Stone,MANAGER,,,,
 1003,Wendy,Ng,WAITER,30,,70,75
 1004,Will,Brown,WAITER,25,,40,45
-1005,Bella,Tran,BARISTA,80,,45,75
+1005,Bella,Tran,BARISTA,80,,65,75
 1006,Ben,Park,BARISTA,65,,30,60
 1007,Sam,Lee,SANDWICH,,80,,
 1008,Sara,Khan,SANDWICH,,70,,
+1009,Jake,Chen,BARISTA,35,25,30,40
+1010,Lisa,Patel,WAITER,30,20,35,38
+1011,Alex,Kim,SANDWICH,85,92,88,90
