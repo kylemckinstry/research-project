@@ -397,6 +397,8 @@ def _determine_demand_for_date(date_str: str, week_id: str, cfg) -> str:
     
     # Otherwise, use weighted random selection
     # Weights favor specialty demands (Coffee, Sandwich) over generic (Mixed)
+    # Note: We include MIXED in choices for demand variance, but it maps to "Mixed" demand,
+    # which tells the scheduler "no specific role preference - use best fit"
     choices = ["BARISTA", "SANDWICH", "WAITER", "MANAGER", "MIXED"]
     weights = [45, 35, 10, 5, 5]  # 45% Coffee, 35% Sandwich, 10% Service, 5% Management, 5% Mixed
     
@@ -593,8 +595,10 @@ def run_schedule(payload: dict):
                 start_val = start_val or cfg.default_shift.start
                 end_val = end_val or cfg.default_shift.end
             
+            # Don't set role_val to "MIXED" - let it be empty if not defined
+            # The scheduler will assign appropriate roles based on employee skills
             if not role_val:
-                role_val = "MIXED"
+                role_val = ""
             
             s_ref = week_ref.collection("shifts").document(str(getattr(s, "id", sid)))
             s_batch.set(s_ref, {
